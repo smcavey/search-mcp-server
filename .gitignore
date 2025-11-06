@@ -1,0 +1,80 @@
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build outputs
+dist/
+build/
+
+# Environment variables and secrets
+.env
+.env*
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+# Kubernetes secrets and generated files
+k8s/secret.yaml
+k8s/*secret*.yaml
+k8s/deployment_docker.yaml
+
+# Deprecated Kubernetes files
+k8s/deployment_bearer.yaml
+k8s/deployment_oauth.yaml
+k8s/rbac_oauth_minimal.yaml
+k8s/rbac_oauth.yaml
+k8s/service-account_bearer.yaml
+k8s/service-account_oauth.yaml
+
+# Deprecated scripts
+scripts/setup-oauth.sh
+
+# OAuth-specific documentation
+README_oauth.md
+
+# Test/demo files
+test-sse.html
+
+# Deprecated build configs
+k8s/buildconfig.yaml
+
+# Generated text files
+2025-08-08-caveat-the-messages-below-were-generated-by-the-u.txt
+
+#backup readme
+README_bup.md
+
+# S2I legacy files (kept as backup)
+**/*.old
+Makefile.old
+
+# S2I build artifacts (legacy)
+.build-*
+.deploy
+.imagestreams
+.buildconfigs
+.namespace
+.rbac
+.secret
+
+# Container build artifacts
+.build-docker
+.deploy-docker
+.namespace-docker
+.rbac-docker
+.secret-docker
+.deploy-prebuilt
+
+#private
+.mcp.json
+CLAUDE.md
+FIND_RESOURCES_ENHANCEMENT_PLAN.md
+buddy-report.md
+postgresql-security-analysis-v2.md
+postgresql-security-analysis.md
+security-analysis-report-corrected.md
+security-analysis-report.md
+.claude/
+
