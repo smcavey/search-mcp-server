@@ -1,11 +1,10 @@
 /**
  * STATUS MAPPING IMPLEMENTATION EXAMPLE
  *
- * This file demonstrates the recommended implementation for fixing the status
- * filtering problem in the ACM MCP Server.
+ * Fixes the status filtering problem in the ACM MCP Server for a key subset of resources.
+ * For rest of the resources, we do a text search 
+ * - refer to cross-resource.ts/function buildStatusConditions
  *
- * This is a REFERENCE IMPLEMENTATION to show the complete solution.
- * To implement, create this as: src/utils/status-mapping.ts
  */
 
 export type StatusCategory = 'simple' | 'custom' | 'complex' | 'multi-condition' | 'nested' | 'none';
