@@ -90,24 +90,28 @@ export class KubernetesTokenValidator {
     }
   }
 
-  private callK8sAPI(path: string, data: any, saToken: string): Promise<any> {
+  private callK8sAPI(path: string, data: any, saToken: string, method: string = 'POST'): Promise<any> {
     return new Promise((resolve, reject) => {
-      const postData = JSON.stringify(data);
+      const isGet = method === 'GET';
+      const postData = isGet ? '' : JSON.stringify(data);
 
       const options = {
         hostname: this.k8sHost,
         port: parseInt(this.k8sPort),
         path,
-        method: 'POST',
+        method,
         headers: {
           'Authorization': `Bearer ${saToken}`,
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'Content-Length': Buffer.byteLength(postData)
-        },
+          'Accept': 'application/json'
+        } as any,
         rejectUnauthorized: false, // Skip TLS verification (like curl -k)
         timeout: 5000 // 5 second timeout
       };
+
+      if (!isGet) {
+        options.headers['Content-Type'] = 'application/json';
+        options.headers['Content-Length'] = Buffer.byteLength(postData);
+      }
 
       const req = https.request(options, (res) => {
         let body = '';
@@ -135,7 +139,9 @@ export class KubernetesTokenValidator {
         reject(new Error('TokenReview API request timed out'));
       });
 
-      req.write(postData);
+      if (!isGet) {
+        req.write(postData);
+      }
       req.end();
     });
   }
@@ -145,7 +151,7 @@ export class KubernetesTokenValidator {
     try {
       const saToken = fs.readFileSync(this.saTokenPath, 'utf8').trim();
       // Try a simple API call to test connectivity
-      await this.callK8sAPI('/api', {}, saToken);
+      await this.callK8sAPI('/api', null, saToken, 'GET');
       return true;
     } catch (error) {
       console.error('Kubernetes API connection test failed:', error);
@@ -173,12 +179,19 @@ export class KubernetesTokenValidator {
     try {
       console.log(`[ACM-AUTH] Checking permissions for user: ${username}, groups: [${groups.join(', ')}]`);
 
-      // Quick check: cluster admin groups (highest permission)
-      const clusterAdminGroups = ['system:masters', 'system:cluster-admins'];
-      const userClusterAdminGroup = groups.find(group => clusterAdminGroups.includes(group));
+      // Check: cluster admin permissions via any group (including custom groups)
+      // First try the common system groups for performance
+      const systemClusterAdminGroups = ['system:masters', 'system:cluster-admins'];
+      const userSystemAdminGroup = groups.find(group => systemClusterAdminGroups.includes(group));
 
-      if (userClusterAdminGroup) {
-        console.log(`[ACM-AUTH] User ${username} granted access via ${userClusterAdminGroup} group`);
+      if (userSystemAdminGroup) {
+        console.log(`[ACM-AUTH] User ${username} granted access via system group: ${userSystemAdminGroup}`);
+        return true;
+      }
+
+      // Check if any user group has cluster-admin role via ClusterRoleBindings
+      const hasClusterAdminViaGroup = await this.checkGroupsForClusterAdmin(groups, username);
+      if (hasClusterAdminViaGroup) {
         return true;
       }
 
@@ -203,6 +216,49 @@ export class KubernetesTokenValidator {
 
     } catch (error) {
       console.error(`[ACM-AUTH] Error checking ACM permissions for user ${username}:`, error);
+      return false;
+    }
+  }
+
+  /**
+   * Check if any of the user's groups have cluster-admin role via ClusterRoleBindings
+   *
+   * @param groups - User's group memberships
+   * @param username - Username for logging
+   * @returns Promise<boolean> - true if any group has cluster-admin permissions
+   */
+  private async checkGroupsForClusterAdmin(groups: string[], username: string): Promise<boolean> {
+    try {
+      const saToken = fs.readFileSync(this.saTokenPath, 'utf8').trim();
+
+      // Get all ClusterRoleBindings with cluster-admin role
+      const clusterRoleBindingsPath = '/apis/rbac.authorization.k8s.io/v1/clusterrolebindings';
+
+      const result = await this.callK8sAPI(clusterRoleBindingsPath, null, saToken, 'GET');
+
+      if (!result.items) {
+        console.log(`[ACM-AUTH] No ClusterRoleBindings found`);
+        return false;
+      }
+
+      // Check if any ClusterRoleBinding grants cluster-admin to user's groups
+      for (const binding of result.items) {
+        if (binding.roleRef?.name === 'cluster-admin') {
+          const subjects = binding.subjects || [];
+
+          for (const subject of subjects) {
+            if (subject.kind === 'Group' && groups.includes(subject.name)) {
+              console.log(`[ACM-AUTH] User ${username} granted access via group "${subject.name}" with cluster-admin role (ClusterRoleBinding: ${binding.metadata?.name})`);
+              return true;
+            }
+          }
+        }
+      }
+
+      return false;
+
+    } catch (error) {
+      console.error(`[ACM-AUTH] Error checking ClusterRoleBindings for user ${username}:`, error);
       return false;
     }
   }
