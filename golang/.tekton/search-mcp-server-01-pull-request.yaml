@@ -40,6 +40,9 @@ spec:
       value: 'true'
     - name: prefetch-input
       value: '[{"type": "gomod", "path": "golang"}]'
+    - name: build-args
+      value:
+        - MCP_VERSION=0.1
   pipelineRef:
     resolver: git
     params:
