@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -32,6 +33,10 @@ type ServerConfig struct {
 	AuthTimeout       time.Duration `env:"MCP_AUTH_TIMEOUT" default:"5s"`     // Timeout for K8s API calls
 	AuthCacheEnabled  bool          `env:"MCP_AUTH_CACHE" default:"true"`     // Cache validated tokens
 	AuthCacheTTL      time.Duration `env:"MCP_AUTH_CACHE_TTL" default:"5m"`   // Token cache TTL
+
+	// Discovery Configuration (for resource-to-kind mappings)
+	DiscoveryTTL    time.Duration `env:"MCP_DISCOVERY_TTL" default:"5m"`      // Discovery cache TTL
+	DiscoverySource string        `env:"MCP_DISCOVERY_SOURCE" default:"database"` // "database" or "kubernetes"
 
 	// Local testing overrides (for non-K8s environments)
 	KubernetesURL     string `env:"MCP_K8S_URL"`          // Manual cluster URL
@@ -89,6 +94,10 @@ func LoadServerConfig() *ServerConfig {
 	config.AuthCacheEnabled = getEnvBoolOrDefault("MCP_AUTH_CACHE", true)
 	config.AuthCacheTTL = getEnvDurationOrDefault("MCP_AUTH_CACHE_TTL", 5*time.Minute)
 
+	// Discovery Configuration
+	config.DiscoveryTTL = getEnvDurationOrDefault("MCP_DISCOVERY_TTL", 5*time.Minute)
+	config.DiscoverySource = getEnvOrDefault("MCP_DISCOVERY_SOURCE", "database")
+
 	// Local testing overrides
 	config.KubernetesURL = getEnvOrDefault("MCP_K8S_URL", "")
 	config.ServiceAccountToken = getEnvOrDefault("MCP_SA_TOKEN", "")
@@ -122,7 +131,7 @@ func (c *ServerConfig) Validate() error {
 	}
 
 	validTransportModes := []string{"auto", "stdio", "http"}
-	if !contains(validTransportModes, c.TransportMode) {
+	if !slices.Contains(validTransportModes, c.TransportMode) {
 		return fmt.Errorf("invalid transport mode: %s, valid options: %v", c.TransportMode, validTransportModes)
 	}
 
@@ -199,14 +208,6 @@ func getEnvDurationOrDefault(key string, defaultValue time.Duration) time.Durati
 	return defaultValue
 }
 
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
-}
 
 // shouldEnableAuth determines if authentication should be enabled based on environment
 func shouldEnableAuth() bool {

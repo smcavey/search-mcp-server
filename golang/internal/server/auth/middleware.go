@@ -5,15 +5,17 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/stolostron/search-mcp-server/pkg/database"
 )
 
 // AuthMiddleware handles HTTP authentication for MCP requests
 type AuthMiddleware struct {
 	validator    *KubernetesValidator
 	config       *AuthConfig
+	db           *database.DatabaseConnection // Database connection for RBAC resolution
 	tokenCache   map[string]*cachedToken
 	cacheMutex   sync.RWMutex
 	cleanupTicker *time.Ticker
@@ -26,9 +28,9 @@ type cachedToken struct {
 }
 
 // NewAuthMiddleware creates a new authentication middleware
-func NewAuthMiddleware(config *AuthConfig) (*AuthMiddleware, error) {
+func NewAuthMiddleware(config *AuthConfig, db *database.DatabaseConnection) (*AuthMiddleware, error) {
 	if !config.EnableAuth {
-		return &AuthMiddleware{config: config}, nil
+		return &AuthMiddleware{config: config, db: db}, nil
 	}
 
 	k8sConfig, err := config.GetKubernetesConfig()
@@ -41,6 +43,7 @@ func NewAuthMiddleware(config *AuthConfig) (*AuthMiddleware, error) {
 	middleware := &AuthMiddleware{
 		validator:  validator,
 		config:     config,
+		db:         db,
 		tokenCache: make(map[string]*cachedToken),
 	}
 
@@ -97,22 +100,33 @@ func (m *AuthMiddleware) Handler(next http.Handler) http.Handler {
 		// Update user context with header source
 		validationResult.User.HeaderSource = headerSource
 
-		// Check ACM admin permissions
-		userToken := strings.TrimPrefix(authHeader, "Bearer ")
-		hasACMAccess, err := m.validator.CheckACMAdminPermissions(validationResult.User, userToken)
+		// Granular RBAC - use permission resolution for authorization
+		userToken := authHeader  // Full "Bearer <token>" string
+		queryFilters, err := m.resolveUserPermissions(r.Context(), userToken)
 		if err != nil {
-			log.Printf("[AUTH] Permission check error for user %s: %v", validationResult.User.Username, err)
-			m.sendAuthError(w, "Permission check failed", err.Error(), http.StatusInternalServerError)
+			// SECURITY: Permission resolution failure = access denied
+			log.Printf("[RBAC-SECURITY] Permission resolution failed for user %s, denying access: %v", validationResult.User.Username, err)
+			log.Printf("[RBAC-SECURITY] Security-first design: K8s API failures result in authentication failure")
+			m.sendAuthError(w, "Permission resolution failed",
+				"Unable to resolve user permissions from Kubernetes API. Access denied for security.",
+				http.StatusInternalServerError)
 			return
 		}
 
-		if !hasACMAccess {
-			log.Printf("[AUTH] ACM admin access denied for user: %s - insufficient permissions", validationResult.User.Username)
+		// Check if user has ANY meaningful ACM-related permissions
+		if len(queryFilters.PermissionSources) == 0 {
+			log.Printf("[RBAC] No ACM permissions found for user: %s - denying access", validationResult.User.Username)
 			m.sendAuthError(w, "Access denied",
-				"ACM administrator permissions required. User must have permissions to create ManagedClusters or be in system:masters group.",
+				"No ACM-related permissions found. User must have at least read access to ACM resources.",
 				http.StatusForbidden)
 			return
 		}
+
+		// Enhance UserContext with resolved query filters
+		validationResult.User.QueryFilters = queryFilters
+		log.Printf("[RBAC] Successfully resolved permissions for user %s: %d permission sources",
+			validationResult.User.Username,
+			len(queryFilters.PermissionSources))
 
 		log.Printf("[AUTH] Access granted for user: %s (via %s header)", validationResult.User.Username, headerSource)
 
@@ -240,7 +254,7 @@ func RequireAuth(authMiddleware *AuthMiddleware, next http.HandlerFunc) http.Han
 
 // GetAuthorizedTools returns tools available to the authenticated user
 func GetAuthorizedTools(userCtx *UserContext) []string {
-	// SECURITY FIX: Require valid authentication
+	// Require valid authentication
 	if userCtx == nil {
 		log.Printf("[SECURITY] GetAuthorizedTools called with nil userCtx - denying all access")
 		return []string{} // Return empty list - no tools authorized

@@ -54,40 +54,23 @@ func (t *HTTPTransport) Start(ctx context.Context, mcpServer *PostgresMCPServer)
 		return fmt.Errorf("failed to register tools: %w", err)
 	}
 
-	// Initialize authentication middleware using proper config loader
-	authConfig := auth.LoadAuthConfig()
-
-	// Override with any specific values from ServerConfig
-	if t.config.EnableAuth {
-		authConfig.EnableAuth = t.config.EnableAuth
-	}
-	if t.config.AuthTimeout > 0 {
-		authConfig.AuthTimeout = t.config.AuthTimeout
-	}
-	if !t.config.AuthCacheEnabled {
-		authConfig.CacheTokens = t.config.AuthCacheEnabled
-	}
-	if t.config.AuthCacheTTL > 0 {
-		authConfig.CacheTTL = t.config.AuthCacheTTL
-	}
-	if t.config.KubernetesURL != "" {
-		authConfig.KubernetesURL = t.config.KubernetesURL
-	}
-	if t.config.ServiceAccountToken != "" {
-		authConfig.TokenValue = t.config.ServiceAccountToken
-	}
-	if t.config.TokenPath != "" {
-		authConfig.TokenPath = t.config.TokenPath
-	}
-	if t.config.KubeconfigPath != "" {
-		authConfig.KubeconfigPath = t.config.KubeconfigPath
-	}
-	if t.config.SkipTLSVerify {
-		authConfig.SkipTLS = t.config.SkipTLSVerify
-	}
+	// Create AuthConfig directly from ServerConfig values (clean, no duplication)
+	authConfig := auth.NewAuthConfigFromServerValues(
+		t.config.EnableAuth,
+		t.config.AuthTimeout,
+		t.config.AuthCacheEnabled,
+		t.config.AuthCacheTTL,
+		t.config.KubernetesURL,
+		t.config.ServiceAccountToken,
+		t.config.TokenPath,
+		t.config.KubeconfigPath,
+		t.config.SkipTLSVerify,
+		t.config.DiscoveryTTL,
+		t.config.DiscoverySource,
+	)
 
 	var err error
-	t.authMiddleware, err = auth.NewAuthMiddleware(authConfig)
+	t.authMiddleware, err = auth.NewAuthMiddleware(authConfig, t.mcpServer.dbConn)
 	if err != nil {
 		return fmt.Errorf("failed to initialize auth middleware: %w", err)
 	}
@@ -229,7 +212,11 @@ func (t *HTTPTransport) registerTools() error {
 		var handler func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)
 		switch def.Name {
 		case "find_resources":
-			handler = t.handleFindResources
+			// Create wrapper to adapt the signature and extract user context
+			handler = func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				userCtx := auth.UserFromContext(ctx)
+				return t.handleFindResources(ctx, request, userCtx)
+			}
 		default:
 			log.Printf("Warning: No handler found for tool: %s", def.Name)
 			continue
@@ -286,7 +273,7 @@ func (t *HTTPTransport) handleMCP(w http.ResponseWriter, r *http.Request) {
 	case "tools/list":
 		t.handleToolsList(w, requestID, userCtx)
 	case "tools/call":
-		t.handleToolsCall(w, requestID, params, userCtx)
+		t.handleToolsCall(r.Context(), w, requestID, params, userCtx)
 	default:
 		t.sendJSONRPCError(w, requestID, -32601, fmt.Sprintf("Method not found: %s", method), http.StatusNotFound)
 	}
@@ -295,15 +282,15 @@ func (t *HTTPTransport) handleMCP(w http.ResponseWriter, r *http.Request) {
 // Tool Handlers (reusing the patterns from STDIO transport)
 
 
-func (t *HTTPTransport) handleFindResources(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (t *HTTPTransport) handleFindResources(ctx context.Context, request mcp.CallToolRequest, userCtx *auth.UserContext) (*mcp.CallToolResult, error) {
 	// Parse arguments using shared function (eliminates duplication)
 	args, err := ParseFindResourcesArgs(request)
 	if err != nil {
 		return nil, fmt.Errorf("invalid find_resources arguments: %w", err)
 	}
 
-	// Execute find resources
-	result, err := t.mcpServer.findCore.FindResources(ctx, args)
+	// Execute find resources with user context for authorization filtering
+	result, err := t.mcpServer.findCore.FindResources(ctx, args, userCtx)
 	if err != nil {
 		return nil, fmt.Errorf("find_resources execution failed: %w", err)
 	}
@@ -456,7 +443,7 @@ func (t *HTTPTransport) handleToolsList(w http.ResponseWriter, requestID interfa
 }
 
 
-func (t *HTTPTransport) handleToolsCall(w http.ResponseWriter, requestID interface{}, params map[string]interface{}, userCtx *auth.UserContext) {
+func (t *HTTPTransport) handleToolsCall(ctx context.Context, w http.ResponseWriter, requestID interface{}, params map[string]interface{}, userCtx *auth.UserContext) {
 	if params == nil {
 		t.sendJSONRPCError(w, requestID, -32602, "Missing params", http.StatusBadRequest)
 		return
@@ -468,7 +455,7 @@ func (t *HTTPTransport) handleToolsCall(w http.ResponseWriter, requestID interfa
 		return
 	}
 
-	// SECURITY FIX: Ensure authentication when auth is enabled
+	// Ensure authentication when auth is enabled
 	if t.config.EnableAuth && userCtx == nil {
 		log.Printf("[SECURITY] Unauthenticated tool call blocked: tool=%s", name)
 		t.sendJSONRPCError(w, requestID, -32001, "Authentication required", http.StatusUnauthorized)
@@ -514,10 +501,9 @@ func (t *HTTPTransport) handleToolsCall(w http.ResponseWriter, requestID interfa
 	var result *mcp.CallToolResult
 	var err error
 
-	ctx := context.Background()
 	switch name {
 	case "find_resources":
-		result, err = t.handleFindResources(ctx, mcpRequest)
+		result, err = t.handleFindResources(ctx, mcpRequest, userCtx)
 	default:
 		t.sendJSONRPCError(w, requestID, -32601, fmt.Sprintf("Unknown tool: %s", name), http.StatusNotFound)
 		return
@@ -538,7 +524,6 @@ func (t *HTTPTransport) handleToolsCall(w http.ResponseWriter, requestID interfa
 
 	t.sendJSONRPCResult(w, requestID, jsonResult)
 }
-
 
 
 // Middleware and utility functions
