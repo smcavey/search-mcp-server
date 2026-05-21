@@ -12,9 +12,9 @@ metadata:
   creationTimestamp: null
   labels:
     appstudio.openshift.io/application: acm-mcp-server-0-1
-    appstudio.openshift.io/component: search-mcp-server-01
+    appstudio.openshift.io/component: search-mcp-server-0-1
     pipelines.appstudio.openshift.io/type: build
-  name: search-mcp-server-01-on-push
+  name: search-mcp-server-0-1-on-push
   namespace: acm-mcp-server-tenant
 spec:
   params:
@@ -23,7 +23,7 @@ spec:
     - name: revision
       value: '{{revision}}'
     - name: output-image
-      value: quay.io/redhat-user-workloads/acm-mcp-server-tenant/search-mcp-server-01:{{revision}}
+      value: quay.io/redhat-user-workloads/acm-mcp-server-tenant/search-mcp-server-0-1:{{revision}}
     - name: build-platforms
       value:
         - linux/x86_64
@@ -53,7 +53,7 @@ spec:
       - name: pathInRepo
         value: pipelines/common.yaml
   taskRunTemplate:
-    serviceAccountName: build-pipeline-search-mcp-server-01
+    serviceAccountName: build-pipeline-search-mcp-server-0-1
   workspaces:
     - name: git-auth
       secret:
