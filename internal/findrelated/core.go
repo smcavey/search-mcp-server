@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -374,6 +375,7 @@ func (f *FindRelatedCore) processItems(queryResult *types.QueryResult, relatedUI
 			Items: items,
 		})
 	}
+	sort.Slice(groups, func(i, j int) bool { return groups[i].Kind < groups[j].Kind })
 	return groups
 }
 
@@ -394,5 +396,6 @@ func (f *FindRelatedCore) groupCounts(related []uidInfo) []RelatedKindGroup {
 			Count: count,
 		})
 	}
+	sort.Slice(groups, func(i, j int) bool { return groups[i].Kind < groups[j].Kind })
 	return groups
 }
