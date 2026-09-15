@@ -127,6 +127,29 @@ func TestFormatRelatedResult_MarkdownEscaping(t *testing.T) {
 	assert.Contains(t, output, "cluster\\_1")
 }
 
+func TestEscapeRelatedMarkdown_WhitespaceCollapsing(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"newlines become spaces", "line1\nline2\nline3", "line1 line2 line3"},
+		{"tabs become spaces", "col1\tcol2", "col1 col2"},
+		{"carriage returns become spaces", "a\rb", "a b"},
+		{"consecutive whitespace collapsed", "a\n\n\nb", "a b"},
+		{"mixed whitespace collapsed", "a\t\n\rb", "a b"},
+		{"leading/trailing trimmed", "\n  hello  \n", "hello"},
+		{"empty string", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := escapeRelatedMarkdown(tt.input)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
 func TestFormatRelatedResult_CountOnly(t *testing.T) {
 	result := &findrelated.FindRelatedResult{
 		Groups: []findrelated.RelatedKindGroup{

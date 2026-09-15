@@ -285,6 +285,47 @@ func TestAPIGroupCondition_WithPrefix(t *testing.T) {
 	assert.Contains(t, cond, "r.data->>'apigroup' = %s")
 }
 
+func TestBuildConditions_UserPermCR_NoSlashInNsKey_SkipsEmptyCluster(t *testing.T) {
+	filters := &auth.QueryFilters{
+		PermissionSources: []auth.PermissionSource{
+			{
+				Source:             "userpermission-cr",
+				ClusterScopedKinds: map[string][]auth.ResourcePermission{},
+				NamespacedKinds: map[string][]auth.ResourcePermission{
+					"just-a-namespace": {{Kind: "Pod", APIGroup: ""}},
+				},
+				ManagedClusters: map[string]struct{}{},
+			},
+		},
+	}
+	cond, params := BuildConditions(filters, "")
+	assert.Equal(t, "1 = 0", cond, "should deny when userpermission-cr nsKey has no '/' (empty cluster)")
+	assert.Nil(t, params)
+}
+
+func TestBuildConditions_PermFilterDropsAll(t *testing.T) {
+	filters := &auth.QueryFilters{
+		PermissionSources: []auth.PermissionSource{
+			{
+				Source: "hub-kubernetes",
+				ClusterScopedKinds: map[string][]auth.ResourcePermission{
+					"local-cluster": {{Kind: "Pod", APIGroup: ""}},
+				},
+				NamespacedKinds: map[string][]auth.ResourcePermission{},
+				ManagedClusters: map[string]struct{}{"local-cluster": {}},
+			},
+		},
+		HubClusterName: "local-cluster",
+	}
+	cond, params := BuildConditionsWithOptions(filters, Options{
+		PermFilter: func(perms []auth.ResourcePermission) []auth.ResourcePermission {
+			return nil
+		},
+	})
+	assert.Equal(t, "1 = 0", cond, "should deny when PermFilter drops all permissions")
+	assert.Nil(t, params)
+}
+
 func TestBuildClusterPerms_MultiplePerms(t *testing.T) {
 	perms := []auth.ResourcePermission{
 		{Kind: "*", APIGroup: "*"},
