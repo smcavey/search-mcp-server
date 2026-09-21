@@ -37,7 +37,7 @@ func TestBuildConditions_ClusterScoped_SpecificKindAndAPIGroup(t *testing.T) {
 	assert.Contains(t, cond, "cluster = %s")
 	assert.Contains(t, cond, "data->>'kind' = %s")
 	assert.Contains(t, cond, "data->>'apigroup' = %s")
-	assert.Equal(t, []interface{}{"local-cluster", "Deployment", "apps"}, params)
+	assert.Equal(t, []interface{}{"local-cluster", "apps", "Deployment"}, params)
 }
 
 func TestBuildConditions_ClusterScoped_WithPrefix(t *testing.T) {
@@ -129,7 +129,7 @@ func TestBuildConditions_EmptyAPIGroup_ISNULL(t *testing.T) {
 	cond, _ := BuildConditions(filters, "")
 
 	assert.Contains(t, cond, "IS NULL")
-	assert.Contains(t, cond, "data->>'apigroup' = %s")
+	assert.Contains(t, cond, "data->>'apigroup' = ''")
 }
 
 func TestBuildConditions_Namespaced_HubKubernetes(t *testing.T) {
@@ -326,16 +326,153 @@ func TestBuildConditions_PermFilterDropsAll(t *testing.T) {
 	assert.Nil(t, params)
 }
 
-func TestBuildClusterPerms_MultiplePerms(t *testing.T) {
+func TestBuildClusterPerms_FullWildcard(t *testing.T) {
 	perms := []auth.ResourcePermission{
 		{Kind: "*", APIGroup: "*"},
 		{Kind: "Pod", APIGroup: ""},
-		{Kind: "*", APIGroup: "apps"},
 	}
 	cond, params := buildClusterPerms("", "my-cluster", "", perms)
 
+	assert.Equal(t, "(cluster = %s AND (1 = 1))", cond)
+	assert.Equal(t, []interface{}{"my-cluster"}, params)
+}
+
+func TestBuildClusterPerms_GroupsByAPIGroup(t *testing.T) {
+	perms := []auth.ResourcePermission{
+		{Kind: "Pod", APIGroup: ""},
+		{Kind: "Service", APIGroup: ""},
+		{Kind: "Deployment", APIGroup: "apps"},
+	}
+	cond, params := buildClusterPerms("", "my-cluster", "", perms)
+
+	assert.Contains(t, cond, "data->>'kind' IN (%s,%s)")
 	assert.Contains(t, cond, " OR ")
+	assert.Contains(t, cond, "data->>'apigroup' = %s")
 
 	placeholderCount := strings.Count(cond, "%s")
 	assert.Equal(t, len(params), placeholderCount)
+
+	assert.Contains(t, params, "my-cluster")
+	assert.Contains(t, params, "Pod")
+	assert.Contains(t, params, "Service")
+	assert.Contains(t, params, "Deployment")
+	assert.Contains(t, params, "apps")
+}
+
+func TestBuildClusterPerms_DeduplicatesKinds(t *testing.T) {
+	perms := []auth.ResourcePermission{
+		{Kind: "Pod", APIGroup: ""},
+		{Kind: "Pod", APIGroup: ""},
+		{Kind: "Service", APIGroup: ""},
+	}
+	cond, _ := buildClusterPerms("", "my-cluster", "", perms)
+
+	assert.Contains(t, cond, "data->>'kind' IN (%s,%s)")
+	assert.NotContains(t, cond, "IN (%s,%s,%s)")
+}
+
+// TestBuildClusterPerms_MatchesOldSQL verifies the shared RBAC code produces the exact
+// same SQL structure and param ordering as the old per-tool buildAPIGroupKindConditions.
+func TestBuildClusterPerms_MatchesOldSQL(t *testing.T) {
+	tests := []struct {
+		name       string
+		cluster    string
+		namespace  string
+		perms      []auth.ResourcePermission
+		wantCond   string
+		wantParams []interface{}
+	}{
+		{
+			name:    "single kind, core apigroup",
+			cluster: "local-cluster", namespace: "",
+			perms:      []auth.ResourcePermission{{Kind: "Pod", APIGroup: ""}},
+			wantCond:   "(cluster = %s AND (((data->>'apigroup' IS NULL OR data->>'apigroup' = '') AND data->>'kind' = %s)))",
+			wantParams: []interface{}{"local-cluster", "Pod"},
+		},
+		{
+			name:    "single kind, named apigroup",
+			cluster: "local-cluster", namespace: "",
+			perms:      []auth.ResourcePermission{{Kind: "Deployment", APIGroup: "apps"}},
+			wantCond:   "(cluster = %s AND ((data->>'apigroup' = %s AND data->>'kind' = %s)))",
+			wantParams: []interface{}{"local-cluster", "apps", "Deployment"},
+		},
+		{
+			name:    "multiple kinds same apigroup grouped into IN",
+			cluster: "local-cluster", namespace: "",
+			perms: []auth.ResourcePermission{
+				{Kind: "Pod", APIGroup: ""},
+				{Kind: "Service", APIGroup: ""},
+				{Kind: "ConfigMap", APIGroup: ""},
+			},
+			wantCond:   "(cluster = %s AND (((data->>'apigroup' IS NULL OR data->>'apigroup' = '') AND data->>'kind' IN (%s,%s,%s))))",
+			wantParams: []interface{}{"local-cluster", "Pod", "Service", "ConfigMap"},
+		},
+		{
+			name:    "mixed apigroups produce OR",
+			cluster: "local-cluster", namespace: "",
+			perms: []auth.ResourcePermission{
+				{Kind: "Pod", APIGroup: ""},
+				{Kind: "Deployment", APIGroup: "apps"},
+			},
+			wantCond:   "(cluster = %s AND (((data->>'apigroup' IS NULL OR data->>'apigroup' = '') AND data->>'kind' = %s) OR (data->>'apigroup' = %s AND data->>'kind' = %s)))",
+			wantParams: []interface{}{"local-cluster", "Pod", "apps", "Deployment"},
+		},
+		{
+			name:    "full wildcard",
+			cluster: "local-cluster", namespace: "",
+			perms:      []auth.ResourcePermission{{Kind: "*", APIGroup: "*"}},
+			wantCond:   "(cluster = %s AND (1 = 1))",
+			wantParams: []interface{}{"local-cluster"},
+		},
+		{
+			name:    "wildcard kind, specific apigroup",
+			cluster: "local-cluster", namespace: "",
+			perms:      []auth.ResourcePermission{{Kind: "*", APIGroup: "apps"}},
+			wantCond:   "(cluster = %s AND (data->>'apigroup' = %s))",
+			wantParams: []interface{}{"local-cluster", "apps"},
+		},
+		{
+			name:    "specific kind, wildcard apigroup",
+			cluster: "local-cluster", namespace: "",
+			perms:      []auth.ResourcePermission{{Kind: "Pod", APIGroup: "*"}},
+			wantCond:   "(cluster = %s AND (data->>'kind' = %s))",
+			wantParams: []interface{}{"local-cluster", "Pod"},
+		},
+		{
+			name:    "with namespace",
+			cluster: "prod-east", namespace: "monitoring",
+			perms:      []auth.ResourcePermission{{Kind: "Pod", APIGroup: ""}},
+			wantCond:   "(cluster = %s AND data->>'namespace' = %s AND (((data->>'apigroup' IS NULL OR data->>'apigroup' = '') AND data->>'kind' = %s)))",
+			wantParams: []interface{}{"prod-east", "monitoring", "Pod"},
+		},
+		{
+			name:    "wildcard namespace omits namespace condition",
+			cluster: "prod-east", namespace: "*",
+			perms:      []auth.ResourcePermission{{Kind: "Pod", APIGroup: ""}},
+			wantCond:   "(cluster = %s AND (((data->>'apigroup' IS NULL OR data->>'apigroup' = '') AND data->>'kind' = %s)))",
+			wantParams: []interface{}{"prod-east", "Pod"},
+		},
+		{
+			name:    "with prefix",
+			cluster: "local-cluster", namespace: "",
+			perms:      []auth.ResourcePermission{{Kind: "Pod", APIGroup: ""}},
+			wantCond:   "(r.cluster = %s AND (((r.data->>'apigroup' IS NULL OR r.data->>'apigroup' = '') AND r.data->>'kind' = %s)))",
+			wantParams: []interface{}{"local-cluster", "Pod"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prefix := ""
+			if tt.name == "with prefix" {
+				prefix = "r."
+			}
+			cond, params := buildClusterPerms(prefix, tt.cluster, tt.namespace, tt.perms)
+			assert.Equal(t, tt.wantCond, cond)
+			assert.Equal(t, tt.wantParams, params)
+
+			placeholderCount := strings.Count(cond, "%s")
+			assert.Equal(t, len(params), placeholderCount, "placeholder/param count mismatch")
+		})
+	}
 }

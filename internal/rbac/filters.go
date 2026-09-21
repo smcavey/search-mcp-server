@@ -2,7 +2,6 @@ package rbac
 
 import (
 	"fmt"
-	"log"
 	"strings"
 
 	"github.com/stolostron/search-mcp-server/internal/server/auth"
@@ -80,11 +79,6 @@ func BuildConditionsWithOptions(filters *auth.QueryFilters, opts Options) (strin
 				continue
 			}
 
-			if namespace == "*" && cluster == "" {
-				log.Printf("[RBAC-SECURITY] Skipping wildcard namespace rule with empty cluster")
-				continue
-			}
-
 			cond, params := buildClusterPerms(opts.ColPrefix, cluster, namespace, filtered)
 			if cond != "" {
 				perSourceConditions = append(perSourceConditions, cond)
@@ -107,49 +101,138 @@ func BuildConditionsWithOptions(filters *auth.QueryFilters, opts Options) (strin
 	return combined, allParams
 }
 
-// buildClusterPerms builds an OR-combined SQL condition for a set of permissions
-// on a given cluster and optional namespace. Uses %s placeholders.
+// buildClusterPerms builds a SQL condition for a set of permissions on a given
+// cluster and optional namespace. Permissions are grouped by apiGroup so that
+// multiple kinds in the same group emit a single kind IN (...) clause. The
+// cluster (and namespace) condition wraps the resource conditions once, matching
+// the structure of the original buildAPIGroupKindConditions. Uses %s placeholders.
 func buildClusterPerms(colPrefix, cluster, namespace string, perms []auth.ResourcePermission) (string, []interface{}) {
+	resourceCond, resourceParams := apiGroupKindConditions(colPrefix, perms)
+	if resourceCond == "" {
+		return "", nil
+	}
+
+	var outerParts []string
+	var outerParams []interface{}
+
+	outerParts = append(outerParts, fmt.Sprintf("%scluster = %%s", colPrefix))
+	outerParams = append(outerParams, cluster)
+
+	if namespace != "" && namespace != "*" {
+		outerParts = append(outerParts, fmt.Sprintf("%sdata->>'namespace' = %%s", colPrefix))
+		outerParams = append(outerParams, namespace)
+	}
+
+	outerParts = append(outerParts, "("+resourceCond+")")
+	outerParams = append(outerParams, resourceParams...)
+
+	return "(" + strings.Join(outerParts, " AND ") + ")", outerParams
+}
+
+// apiGroupKindConditions groups ResourcePermissions by apiGroup and generates
+// SQL conditions pairing data->>'apigroup' with data->>'kind'. Full wildcard
+// (apigroup=* AND kind=*) short-circuits to "1 = 1". Uses %s placeholders.
+func apiGroupKindConditions(colPrefix string, perms []auth.ResourcePermission) (string, []interface{}) {
+	for _, p := range perms {
+		if p.Kind == "*" && p.APIGroup == "*" {
+			return "1 = 1", nil
+		}
+	}
+
+	type groupEntry struct {
+		kinds    []string
+		wildcard bool
+	}
+	groups := make(map[string]*groupEntry)
+	var groupOrder []string
+
+	for _, p := range perms {
+		entry, exists := groups[p.APIGroup]
+		if !exists {
+			entry = &groupEntry{}
+			groups[p.APIGroup] = entry
+			groupOrder = append(groupOrder, p.APIGroup)
+		}
+		if p.Kind == "*" {
+			entry.wildcard = true
+		} else if !entry.wildcard {
+			found := false
+			for _, k := range entry.kinds {
+				if k == p.Kind {
+					found = true
+					break
+				}
+			}
+			if !found {
+				entry.kinds = append(entry.kinds, p.Kind)
+			}
+		}
+	}
+
 	var conditions []string
-	var allParams []interface{}
+	var params []interface{}
 
-	for _, perm := range perms {
-		var parts []string
-		var params []interface{}
+	for _, apiGroup := range groupOrder {
+		entry := groups[apiGroup]
 
-		parts = append(parts, fmt.Sprintf("%scluster = %%s", colPrefix))
-		params = append(params, cluster)
-
-		if namespace != "" && namespace != "*" {
-			parts = append(parts, fmt.Sprintf("%sdata->>'namespace' = %%s", colPrefix))
-			params = append(params, namespace)
+		var apiGroupCond string
+		switch apiGroup {
+		case "*":
+			apiGroupCond = ""
+		case "":
+			apiGroupCond = fmt.Sprintf("(%sdata->>'apigroup' IS NULL OR %sdata->>'apigroup' = '')", colPrefix, colPrefix)
+		default:
+			apiGroupCond = fmt.Sprintf("%sdata->>'apigroup' = %%s", colPrefix)
 		}
 
-		if perm.Kind == "*" && perm.APIGroup == "*" {
-			// Full wildcard — cluster (+ namespace) only.
-		} else if perm.Kind == "*" {
-			agCond, agParams := apiGroupCondition(colPrefix, perm.APIGroup)
-			parts = append(parts, agCond)
-			params = append(params, agParams...)
-		} else {
-			parts = append(parts, fmt.Sprintf("%sdata->>'kind' = %%s", colPrefix))
-			params = append(params, perm.Kind)
+		var kindCond string
+		if entry.wildcard {
+			kindCond = ""
+		} else if len(entry.kinds) == 1 {
+			kindCond = fmt.Sprintf("%sdata->>'kind' = %%s", colPrefix)
+		} else if len(entry.kinds) > 1 {
+			placeholders := make([]string, len(entry.kinds))
+			for i := range entry.kinds {
+				placeholders[i] = "%s"
+			}
+			kindCond = fmt.Sprintf("%sdata->>'kind' IN (%s)", colPrefix, strings.Join(placeholders, ","))
+		}
 
-			if perm.APIGroup != "*" {
-				agCond, agParams := apiGroupCondition(colPrefix, perm.APIGroup)
-				parts = append(parts, agCond)
-				params = append(params, agParams...)
+		var combined string
+		if apiGroupCond == "" && kindCond == "" {
+			combined = "1 = 1"
+		} else if apiGroupCond == "" {
+			combined = kindCond
+		} else if kindCond == "" {
+			combined = apiGroupCond
+			if apiGroup != "" && apiGroup != "*" {
+				params = append(params, apiGroup)
+			}
+		} else {
+			combined = fmt.Sprintf("(%s AND %s)", apiGroupCond, kindCond)
+			if apiGroup != "" && apiGroup != "*" {
+				params = append(params, apiGroup)
 			}
 		}
 
-		allParams = append(allParams, params...)
-		conditions = append(conditions, "("+strings.Join(parts, " AND ")+")")
+		if !entry.wildcard {
+			for _, k := range entry.kinds {
+				params = append(params, k)
+			}
+		}
+
+		if combined != "" {
+			conditions = append(conditions, combined)
+		}
 	}
 
 	if len(conditions) == 0 {
 		return "", nil
 	}
-	return strings.Join(conditions, " OR "), allParams
+	if len(conditions) == 1 {
+		return conditions[0], params
+	}
+	return strings.Join(conditions, " OR "), params
 }
 
 // apiGroupCondition returns the SQL fragment and params for matching an apiGroup.

@@ -191,7 +191,7 @@ func GetCentralizedToolDefinitions() []ToolDefinition {
 			Description: "Find resources related to seed resources via ownership and relationship edges in the search index. Traverses the search.edges table bidirectionally. Results are RBAC-filtered to the caller's permissions.\n\nUse find_resources first to locate resources, then pass UIDs from those results to this tool.",
 			Options: []mcp.ToolOption{
 				mcp.WithString("uids",
-					mcp.Description("Comma-separated UIDs of seed resources (from find_resources results). Required."),
+					mcp.Description("UID of the seed resource (from find_resources results). Exactly one UID. Required."),
 					mcp.Required(),
 				),
 				mcp.WithString("relatedKinds",
@@ -201,7 +201,7 @@ func GetCentralizedToolDefinitions() []ToolDefinition {
 					mcp.Description("Traversal depth. 0 = auto-detect (1 hop normally, 3 for Application seeds). Set explicitly to override."),
 					mcp.DefaultNumber(0),
 					mcp.Min(0),
-					mcp.Max(10),
+					mcp.Max(3),
 				),
 				mcp.WithString("outputMode",
 					mcp.Description("Output format: list=full resource data, count=kind counts only"),
@@ -220,7 +220,7 @@ func GetCentralizedToolDefinitions() []ToolDefinition {
 				"properties": map[string]interface{}{
 					"uids": map[string]interface{}{
 						"type":        "string",
-						"description": "Comma-separated UIDs of seed resources (from find_resources results)",
+						"description": "UID of the seed resource (from find_resources results). Exactly one UID.",
 					},
 					"relatedKinds": map[string]interface{}{
 						"type":        "string",
@@ -231,7 +231,7 @@ func GetCentralizedToolDefinitions() []ToolDefinition {
 						"description": "Traversal depth. 0 = auto-detect (1 hop normally, 3 for Application seeds). Set explicitly to override.",
 						"default":     0,
 						"minimum":     0,
-						"maximum":     10,
+						"maximum":     3,
 					},
 					"outputMode": map[string]interface{}{
 						"type":        "string",

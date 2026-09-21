@@ -155,6 +155,7 @@ func (t *STDIOTransport) handleFindRelatedResources(ctx context.Context, request
 		return nil, fmt.Errorf("invalid find_related_resources arguments: %w", err)
 	}
 
+	// STDIO transport has no auth middleware, so userCtx is nil (RBAC is skipped).
 	result, err := t.mcpServer.findRelatedCore.FindRelatedResources(ctx, args, nil)
 	if err != nil {
 		t.errorCount++
