@@ -132,12 +132,17 @@ func (f *FindRelatedCore) FindRelatedResources(ctx context.Context, args FindRel
 	// Parse items and group by kind.
 	groups := f.processItems(itemResult, relatedUIDs)
 
+	returnedCount := 0
+	for _, g := range groups {
+		returnedCount += g.Count
+	}
+
 	return &FindRelatedResult{
 		Groups: groups,
 		Metadata: RelatedMetadata{
 			SeedUIDs:      args.UIDs,
 			MaxHops:       args.MaxHops,
-			TotalRelated:  len(relatedUIDs),
+			TotalRelated:  returnedCount,
 			ExecutionTime: time.Since(startTime).Milliseconds(),
 		},
 	}, nil
@@ -147,11 +152,14 @@ func (f *FindRelatedCore) validateArgs(args FindRelatedArgs) error {
 	if len(args.UIDs) == 0 {
 		return fmt.Errorf("uids is required and must not be empty")
 	}
+	if len(args.UIDs) > 1 {
+		return fmt.Errorf("uids must contain exactly 1 seed UID")
+	}
 	if args.MaxHops < 0 {
 		return fmt.Errorf("maxHops must be non-negative")
 	}
-	if args.MaxHops > 10 {
-		return fmt.Errorf("maxHops must not exceed 10")
+	if args.MaxHops > 3 {
+		return fmt.Errorf("maxHops must not exceed 3")
 	}
 	if args.Limit < 0 {
 		return fmt.Errorf("limit must be non-negative")

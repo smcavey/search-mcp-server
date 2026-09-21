@@ -43,9 +43,14 @@ func TestValidateArgs(t *testing.T) {
 			wantErr: "maxHops must be non-negative",
 		},
 		{
+			name:    "multiple UIDs",
+			args:    FindRelatedArgs{UIDs: []string{"uid-1", "uid-2"}},
+			wantErr: "uids must contain exactly 1",
+		},
+		{
 			name:    "maxHops exceeds max",
-			args:    FindRelatedArgs{UIDs: []string{"uid-1"}, MaxHops: 11},
-			wantErr: "maxHops must not exceed 10",
+			args:    FindRelatedArgs{UIDs: []string{"uid-1"}, MaxHops: 4},
+			wantErr: "maxHops must not exceed 3",
 		},
 		{
 			name:    "negative limit",
@@ -137,7 +142,7 @@ func TestBuildRelatedQuery_SingleHop(t *testing.T) {
 	core := NewFindRelatedCore(nil)
 
 	args := FindRelatedArgs{
-		UIDs:    []string{"uid-1", "uid-2"},
+		UIDs:    []string{"uid-1"},
 		MaxHops: 1,
 	}
 
@@ -147,8 +152,7 @@ func TestBuildRelatedQuery_SingleHop(t *testing.T) {
 	assert.Contains(t, query, "INNER JOIN search.resources")
 	assert.NotContains(t, query, "RECURSIVE")
 	assert.Contains(t, query, "$1")
-	assert.Contains(t, query, "$2")
-	assert.Equal(t, []interface{}{"uid-1", "uid-2"}, params)
+	assert.Equal(t, []interface{}{"uid-1"}, params)
 }
 
 func TestBuildRelatedQuery_MultiHop(t *testing.T) {

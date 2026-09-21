@@ -65,7 +65,7 @@ func TestGetCentralizedToolDefinitions_FindRelatedSchema(t *testing.T) {
 	maxHops := props["maxHops"].(map[string]interface{})
 	assert.Equal(t, "integer", maxHops["type"])
 	assert.Equal(t, 0, maxHops["minimum"])
-	assert.Equal(t, 10, maxHops["maximum"])
+	assert.Equal(t, 3, maxHops["maximum"])
 
 	limit := props["limit"].(map[string]interface{})
 	assert.Equal(t, "integer", limit["type"])
